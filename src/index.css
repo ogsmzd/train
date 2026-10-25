@@ -1,0 +1,92 @@
+@import "tailwindcss";
+
+/*
+  Train — visual system
+  Gi indigo + cotton. The only real colour is your readiness:
+  --tint is set from today's check-in and runs through the hero,
+  progress bars and the rest timer. Numbers read like a judo scoreboard.
+*/
+
+@theme {
+  --font-display: 'Big Shoulders Display Variable', 'Arial Narrow', sans-serif;
+  --font-sans: 'Atkinson Hyperlegible Next Variable', -apple-system, 'Segoe UI', sans-serif;
+
+  --color-bg: #0d1330;        /* gi indigo */
+  --color-card: #151c3d;      /* indigo, one fold up */
+  --color-card2: #1e2750;     /* pressed cotton-on-indigo wells */
+  --color-line: #2a3462;
+  --color-ink: #efe9dc;       /* unbleached cotton */
+  --color-mute: #a3abcf;      /* faded indigo thread */
+  --color-accent: #efe9dc;    /* actions are cotton, not a brand colour */
+  --color-go: #63c98f;
+  --color-warn: #e9b44c;
+  --color-stop: #ec6b5f;
+  --color-tint: var(--tint);
+}
+
+:root {
+  --tint: #7f8bc4; /* no check-in yet: neutral indigo */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+}
+:root[data-ready='green'] { --tint: #63c98f; }
+:root[data-ready='amber'] { --tint: #e9b44c; }
+:root[data-ready='red'] { --tint: #ec6b5f; }
+
+html, body, #root { min-height: 100%; }
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.45;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior-y: none;
+}
+button, a, input, textarea { touch-action: manipulation; }
+button { cursor: pointer; }
+input, textarea { font: inherit; color: inherit; font-size: 16px; } /* 16px stops iOS zoom */
+input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; }
+input[type='number'] { -moz-appearance: textfield; }
+::placeholder { color: color-mix(in srgb, var(--color-mute) 70%, transparent); }
+
+:focus-visible {
+  outline: 2px solid var(--color-ink);
+  outline-offset: 2px;
+  border-radius: 10px;
+}
+
+.pt-safe { padding-top: max(env(safe-area-inset-top), 14px); }
+.pb-safe { padding-bottom: max(env(safe-area-inset-bottom), 10px); }
+
+/* scoreboard numerals */
+.num {
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  line-height: 0.9;
+}
+.eyebrow {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-mute);
+}
+
+.press { transition: transform 120ms var(--ease-out), background-color 160ms, color 160ms, opacity 160ms; }
+.press:active { transform: scale(0.97); }
+
+@keyframes sheet-in { from { transform: translateY(100%); } to { transform: none; } }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes stamp { 0% { transform: scale(1.25); opacity: 0; } 100% { transform: none; opacity: 1; } }
+.sheet { animation: sheet-in 260ms var(--ease-out); }
+.scrim { animation: fade-in 200ms ease-out; }
+.stamp { animation: stamp 220ms var(--ease-out); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
