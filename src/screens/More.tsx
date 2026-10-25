@@ -136,7 +136,28 @@ export default function More() {
         <p className="text-[13px] text-mute">Coming in Phase 2: recovery into your check-in, and BJJ / judo sessions logged automatically for you to rate.</p>
       </Card>
 
-      <p className="px-1 pb-2 text-center text-[11px] text-mute">Exercise images: free-exercise-db (public domain)</p>
+      <Card>
+        <Label>Delete data</Label>
+        <p className="mb-3 text-[14px] text-mute">Removes every workout, check-in and mat session from this phone. Export a backup first if you might want it back.</p>
+        <Btn
+          kind="danger"
+          className="w-full"
+          onClick={async () => {
+            if (!confirm('Delete all training data on this phone? This cannot be undone.')) return
+            await Promise.all([db.workouts.clear(), db.checkins.clear(), db.mat.clear(), db.customExercises.clear(), db.settings.clear()])
+            setMsg('All data deleted from this phone.')
+          }}
+        >
+          Delete all data
+        </Btn>
+      </Card>
+
+      <p className="px-1 pb-2 text-center text-[12px] text-mute">
+        Exercise images: free-exercise-db (public domain) ·{' '}
+        <a href="/privacy.html" className="underline">
+          Privacy
+        </a>
+      </p>
     </div>
   )
 }
