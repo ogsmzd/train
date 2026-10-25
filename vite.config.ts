@@ -10,7 +10,7 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['icon-192.png', 'icon-512.png', 'apple-touch-icon.png'],
-      workbox: { globPatterns: ['**/*.{js,css,html,png,jpg,svg,woff2}'], maximumFileSizeToCacheInBytes: 4_000_000 },
+      workbox: { navigateFallbackDenylist: [/^\/api\//, /^\/privacy/], globPatterns: ['**/*.{js,css,html,png,jpg,svg,woff2}'], maximumFileSizeToCacheInBytes: 4_000_000 },
       manifest: {
         name: 'Train',
         short_name: 'Train',
