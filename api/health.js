@@ -14,7 +14,7 @@ export default async function handler(req, res) {
       database = /does not exist|PGRST205|schema cache/i.test(m)
         ? 'tables missing — run the setup SQL'
         : /\(401\)|\(403\)|invalid api key|unauthor/i.test(m)
-          ? 'secret key rejected — check SUPABASE_SECRET_KEY'
+          ? `secret key rejected (HTTP ${(m.match(/\((\d{3})\)/) || [])[1] || '?'}) — check SUPABASE_SECRET_KEY, then redeploy`
           : /ENOTFOUND|fetch failed|Invalid URL/i.test(m)
             ? 'cannot reach SUPABASE_URL — check the address'
             : 'error: ' + scrub(m).slice(0, 120)
