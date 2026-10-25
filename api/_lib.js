@@ -64,7 +64,14 @@ export function requirePasscode(req) {
 
 // ---------- Supabase REST (secret key on the apikey header only) ----------
 export async function sb(path, { method = 'GET', body, prefer } = {}) {
-  const url = env('SUPABASE_URL').replace(/\/$/, '') + '/rest/v1/' + path
+  // accept the project URL in any form (with or without /rest/v1 or a trailing slash)
+  let origin
+  try {
+    origin = new URL(env('SUPABASE_URL')).origin
+  } catch {
+    throw new HttpError(500, 'SUPABASE_URL is not a valid address. It should look like https://xxxx.supabase.co')
+  }
+  const url = origin + '/rest/v1/' + path
   const headers = { apikey: env('SUPABASE_SECRET_KEY'), 'Content-Type': 'application/json', Accept: 'application/json' }
   if (prefer) headers.Prefer = prefer
   const r = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) })
