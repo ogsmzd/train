@@ -6,8 +6,13 @@ export const WHOOP_API = WHOOP_BASE + '/developer'
 export const WHOOP_AUTH = WHOOP_BASE + '/oauth/oauth2'
 export const WHOOP_SCOPES = 'read:recovery read:sleep read:workout read:cycles offline'
 
+const SECRET_NAMES = ['SUPABASE_SECRET_KEY', 'WHOOP_CLIENT_SECRET', 'APP_PASSCODE', 'WHOOP_CLIENT_ID']
+
+/** Settings are trimmed: a value pasted with a stray newline or space still works. */
 export function env(name) {
-  const v = process.env[name]
+  const raw = process.env[name] || ''
+  // keys and URLs never contain whitespace, so drop any (e.g. a line break from copy-paste)
+  const v = name === 'APP_PASSCODE' ? raw.trim() : raw.replace(/\s+/g, '')
   if (!v) throw new HttpError(500, `Server setting ${name} is missing. Add it in Vercel → Settings → Environment Variables.`)
   return v
 }
@@ -17,6 +22,17 @@ export class HttpError extends Error {
     super(message)
     this.status = status
   }
+}
+
+/** Remove any secret value (raw or trimmed) from text before it can leave the server. */
+export function scrub(text) {
+  let out = String(text ?? '')
+  for (const n of SECRET_NAMES) {
+    const raw = process.env[n]
+    if (!raw) continue
+    for (const v of new Set([raw, raw.trim(), ...raw.split(/\s+/).filter((x) => x.length >= 6)])) if (v) out = out.split(v).join('[hidden]')
+  }
+  return out
 }
 
 export function send(res, status, body) {
@@ -32,7 +48,7 @@ export function route(fn) {
     } catch (e) {
       const status = e instanceof HttpError ? e.status : 500
       if (status >= 500) console.error(e)
-      send(res, status, { error: e.message || 'Server error' })
+      send(res, status, { error: scrub(e.message) || 'Server error' })
     }
   }
 }
@@ -58,7 +74,7 @@ export async function sb(path, { method = 'GET', body, prefer } = {}) {
     try {
       msg = JSON.parse(text).message || text
     } catch {}
-    throw new HttpError(502, `Database error (${r.status}): ${msg}`)
+    throw new HttpError(502, `Database error (${r.status}): ${scrub(msg)}`)
   }
   return text ? JSON.parse(text) : null
 }
