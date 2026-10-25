@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db, getSetting, todayISO, type Checkin, type Level, type MatSession } from '../db'
+import { db, deleteSynced, getSetting, todayISO, type Checkin, type Level, type MatSession } from '../db'
 import { MAT_SCHEDULE, PROGRAM, type MatSlot, type MatType } from '../data/program'
 import { isDeloadWeek, readiness } from '../engine/suggest'
 import { DEFAULT_PROGRAM_START, startWorkout, weekRange } from '../lib/session'
@@ -12,7 +12,9 @@ export default function Today({ onOpenWorkout }: { onOpenWorkout: () => void }) 
   const today = todayISO()
   const now = new Date()
   const weekday = now.getDay()
-  const checkin = useLiveQuery(() => db.checkins.get(today), [today])
+  const rawCheckin = useLiveQuery(() => db.checkins.get(today), [today])
+  const whoopToday = useLiveQuery(() => db.whoop.get(today), [today])
+  const checkin = rawCheckin ? { ...rawCheckin, whoopRecovery: whoopToday?.recovery ?? rawCheckin.whoopRecovery } : undefined
   const active = useLiveQuery(() => db.workouts.filter((w) => w.source === 'app' && !w.endedAt).first())
   const doneToday = useLiveQuery(() => db.workouts.where('date').equals(today).filter((w) => !!w.endedAt).toArray(), [today])
   const matToday = useLiveQuery(() => db.mat.where('date').equals(today).toArray(), [today]) ?? []
@@ -24,6 +26,10 @@ export default function Today({ onOpenWorkout }: { onOpenWorkout: () => void }) 
     return { ws, ms }
   }, [wk0, wk1])
 
+  const toRate = useLiveQuery(async () => {
+    const from = todayISO(new Date(Date.now() - 7 * 86400000))
+    return (await db.mat.where('date').between(from, today, true, false).toArray()).filter((m) => !m.feel).sort((a, b) => b.date.localeCompare(a.date))
+  }, [today]) ?? []
   const [checkOpen, setCheckOpen] = useState(false)
   const [startAfterCheck, setStartAfterCheck] = useState<null | 'pull' | 'push' | 'legs'>(null)
   const [matSheet, setMatSheet] = useState<null | { slot?: MatSlot; existing?: MatSession }>(null)
@@ -68,16 +74,28 @@ export default function Today({ onOpenWorkout }: { onOpenWorkout: () => void }) 
         <PlanRow
           time={s.time}
           title={s.label}
-          sub={logged ? `${logged.minutes} min${logged.feel ? ` · felt ${logged.feel}/5` : ''}` : `${s.minutes} min`}
-          done={!!logged}
+          sub={logged ? matSub(logged) : `${s.minutes} min`}
+          done={!!logged?.feel}
           onClick={() => setMatSheet({ slot: s, existing: logged })}
-          action={!logged ? <Btn kind="soft" onClick={() => setMatSheet({ slot: s })}>Log</Btn> : undefined}
+          action={
+            logged ? (
+              <Btn onClick={() => setMatSheet({ slot: s, existing: logged })}>Rate</Btn>
+            ) : (
+              <Btn kind="soft" onClick={() => setMatSheet({ slot: s })}>
+                Log
+              </Btn>
+            )
+          }
         />
       ),
     })
   }
   for (const m of matToday.filter((m) => !slots.some((s) => s.label === m.label))) {
-    rows.push({ time: '99', key: 'm' + m.id, node: <PlanRow time="—" title={m.label} sub={`${m.minutes} min${m.feel ? ` · felt ${m.feel}/5` : ''}${m.source === 'whoop' ? ' · WHOOP' : ''}`} done onClick={() => setMatSheet({ existing: m })} /> })
+    rows.push({
+      time: m.time ?? '99',
+      key: 'm' + m.id,
+      node: <PlanRow time={m.time ?? '—'} title={m.label} sub={matSub(m)} done={!!m.feel} onClick={() => setMatSheet({ existing: m })} action={<Btn onClick={() => setMatSheet({ existing: m })}>Rate</Btn>} />,
+    })
   }
   rows.sort((a, b) => a.time.localeCompare(b.time))
 
@@ -96,7 +114,6 @@ export default function Today({ onOpenWorkout }: { onOpenWorkout: () => void }) 
           <div className="mt-2 flex items-center justify-between gap-3 text-[14px] text-mute">
             <span>
               {r.reasons.join(' · ')}
-              {checkin.whoopRecovery == null && ' · WHOOP not linked yet'}
             </span>
             <span className="shrink-0 font-semibold text-ink underline decoration-line decoration-2 underline-offset-4">Edit</span>
           </div>
@@ -108,12 +125,14 @@ export default function Today({ onOpenWorkout }: { onOpenWorkout: () => void }) 
             <br />
             you today?
           </div>
-          <p className="mt-3 text-[15px] text-mute">Four taps. Your answers set today’s weights.</p>
+          <p className="mt-3 text-[15px] text-mute">Four taps. Your answers set today’s weights{whoopToday ? ', alongside WHOOP' : ''}.</p>
           <Btn className="mt-4 w-full" onClick={() => setCheckOpen(true)}>
             Check in
           </Btn>
         </div>
       )}
+
+      {whoopToday && <WhoopLine w={whoopToday} />}
 
       {/* week on the tatami */}
       {week && <WeekStrip ws={week.ws} ms={week.ms} start={wk0} today={today} />}
@@ -136,10 +155,29 @@ export default function Today({ onOpenWorkout }: { onOpenWorkout: () => void }) 
         </div>
       </section>
 
+      {toRate.length > 0 && (
+        <section>
+          <Label>Waiting for your rating</Label>
+          <div className="divide-y divide-line overflow-hidden rounded-[22px] bg-card">
+            {toRate.map((m) => (
+              <PlanRow
+                key={m.id}
+                time={new Date(m.date + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'short' })}
+                title={m.label}
+                sub={matSub(m)}
+                onClick={() => setMatSheet({ existing: m })}
+                action={<Btn onClick={() => setMatSheet({ existing: m })}>Rate</Btn>}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
       <CheckinSheet
         key={(checkin?.date ?? 'none') + String(checkOpen)}
         open={checkOpen}
         initial={checkin}
+        whoopRecovery={whoopToday?.recovery}
         cta={startAfterCheck ? 'Save and start' : 'Save check-in'}
         onClose={() => {
           setCheckOpen(false)
@@ -173,6 +211,42 @@ export default function Today({ onOpenWorkout }: { onOpenWorkout: () => void }) 
         </div>
       </Sheet>
     </div>
+  )
+}
+
+function matSub(m: MatSession) {
+  const bits = [`${m.minutes} min`]
+  if (m.strain != null) bits.push(`strain ${m.strain}`)
+  if (m.feel) bits.push(`felt ${m.feel}/5`)
+  else if (m.source === 'whoop') bits.push('from WHOOP — how did it feel?')
+  return bits.join(' · ')
+}
+
+function WhoopLine({ w }: { w: { recovery: number; hrv: number | null; rhr: number | null; sleepPerf: number | null } }) {
+  const tone = w.recovery >= 67 ? 'text-go' : w.recovery >= 34 ? 'text-warn' : 'text-stop'
+  const Stat = ({ v, unit, l }: { v: number | null; unit?: string; l: string }) =>
+    v == null ? null : (
+      <div>
+        <div className="num text-[30px]">
+          {v}
+          {unit && <span className="ml-0.5 font-sans text-[12px] font-bold text-mute">{unit}</span>}
+        </div>
+        <div className="text-[12px] text-mute">{l}</div>
+      </div>
+    )
+  return (
+    <section aria-label="WHOOP this morning" className="flex items-end justify-between rounded-[22px] bg-card px-4 py-3">
+      <div>
+        <div className={`num text-[30px] ${tone}`}>
+          {w.recovery}
+          <span className="ml-0.5 font-sans text-[12px] font-bold text-mute">%</span>
+        </div>
+        <div className="text-[12px] text-mute">WHOOP recovery</div>
+      </div>
+      <Stat v={w.hrv} unit="ms" l="HRV" />
+      <Stat v={w.rhr} unit="bpm" l="resting HR" />
+      <Stat v={w.sleepPerf} unit="%" l="sleep" />
+    </section>
   )
 }
 
@@ -251,7 +325,7 @@ function WeekStrip({ ws, ms, start, today }: { ws: { date: string }[]; ms: { dat
   )
 }
 
-export function CheckinSheet({ open, initial, onClose, onSaved, cta }: { open: boolean; initial?: Checkin; onClose: () => void; onSaved: (c: Checkin) => void; cta: string }) {
+export function CheckinSheet({ open, initial, onClose, onSaved, cta, whoopRecovery }: { open: boolean; initial?: Checkin; onClose: () => void; onSaved: (c: Checkin) => void; cta: string; whoopRecovery?: number }) {
   const [back, setBack] = useState<Level | undefined>(initial?.back)
   const [sleep, setSleep] = useState<number | undefined>(initial?.sleep)
   const [sore, setSore] = useState<number | undefined>(initial?.soreness)
@@ -290,7 +364,7 @@ export function CheckinSheet({ open, initial, onClose, onSaved, cta }: { open: b
           className="w-full"
           disabled={!ready}
           onClick={async () => {
-            const c: Checkin = { date: todayISO(), back: back!, sleep: sleep!, soreness: sore!, energy: energy!, whoopRecovery: initial?.whoopRecovery }
+            const c: Checkin = { date: todayISO(), back: back!, sleep: sleep!, soreness: sore!, energy: energy!, whoopRecovery: whoopRecovery ?? initial?.whoopRecovery }
             await db.checkins.put(c)
             onSaved(c)
           }}
@@ -359,7 +433,7 @@ function MatForm({ state, onClose }: { state: { slot?: MatSlot; existing?: MatSe
               kind="danger"
               onClick={async () => {
                 if (!confirm('Delete this session?')) return
-                await db.mat.delete(e.id!)
+                await deleteSynced('mat', e.id!)
                 onClose()
               }}
             >

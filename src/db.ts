@@ -44,6 +44,8 @@ export interface Workout {
   note?: string
   readiness?: Level
   source: 'app' | 'hevy'
+  uid?: string // stable id across devices (cloud sync)
+  updatedAt?: number
 }
 
 export interface Checkin {
@@ -52,7 +54,8 @@ export interface Checkin {
   sleep: number // 1–5
   soreness: number // 1–5 (5 = very sore)
   energy: number // 1–5
-  whoopRecovery?: number // 0–100, filled by the WHOOP link (Phase 2)
+  whoopRecovery?: number // 0–100, filled by the WHOOP link
+  updatedAt?: number
 }
 
 export interface MatSession {
@@ -68,16 +71,37 @@ export interface MatSession {
   whoopId?: string
   strain?: number
   avgHr?: number
+  time?: string // HH:MM start, when known
+  uid?: string
+  updatedAt?: number
 }
 
 export interface CustomExercise {
   id: string
   name: string
+  updatedAt?: number
 }
 
 export interface Setting {
   key: string
   value: unknown
+  updatedAt?: number
+}
+
+/** A WHOOP morning: one row per local date, refreshed from WHOOP (not synced — WHOOP is the source). */
+export interface WhoopDay {
+  date: string
+  recovery: number
+  hrv: number | null
+  rhr: number | null
+  sleepPerf: number | null
+}
+
+export interface Tombstone {
+  key: string // `${kind}:${id}`
+  kind: string
+  id: string
+  at: number
 }
 
 class TrainDB extends Dexie {
@@ -86,6 +110,8 @@ class TrainDB extends Dexie {
   mat!: Table<MatSession, number>
   customExercises!: Table<CustomExercise, string>
   settings!: Table<Setting, string>
+  whoop!: Table<WhoopDay, string>
+  tombstones!: Table<Tombstone, string>
   constructor(name = 'train') {
     super(name)
     this.version(1).stores({
@@ -95,10 +121,83 @@ class TrainDB extends Dexie {
       customExercises: 'id',
       settings: 'key',
     })
+    this.version(2)
+      .stores({
+        workouts: '++id, date, dayId, source, &uid, updatedAt',
+        checkins: 'date, updatedAt',
+        mat: '++id, date, source, whoopId, &uid, updatedAt',
+        customExercises: 'id, updatedAt',
+        settings: 'key, updatedAt',
+        whoop: 'date',
+        tombstones: 'key',
+      })
+      .upgrade(async (tx) => {
+        const now = Date.now()
+        await tx.table('workouts').toCollection().modify((w: Workout) => {
+          w.uid ??= uuid()
+          w.updatedAt ??= now
+        })
+        await tx.table('mat').toCollection().modify((m: MatSession) => {
+          m.uid ??= uuid()
+          m.updatedAt ??= now
+        })
+        for (const t of ['checkins', 'customExercises', 'settings']) await tx.table(t).toCollection().modify((r: { updatedAt?: number }) => void (r.updatedAt ??= now))
+      })
   }
 }
 
+export function uuid() {
+  return globalThis.crypto?.randomUUID?.() ?? 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10)
+}
+
 export const db = new TrainDB()
+
+// ---------- change tracking for cloud sync ----------
+// While remote changes are being applied, writes must not count as local edits.
+export const syncState = { applyingRemote: false, onLocalChange: () => {} }
+const SYNCED = ['workouts', 'checkins', 'mat', 'customExercises', 'settings'] as const
+const LOCAL_ONLY_SETTINGS = new Set<string>([])
+for (const name of SYNCED) {
+  const t = db.table(name)
+  t.hook('creating', (_k, obj: any) => {
+    if ((name === 'workouts' || name === 'mat') && !obj.uid) obj.uid = uuid()
+    if (syncState.applyingRemote) {
+      obj.updatedAt ??= Date.now()
+      return
+    }
+    obj.updatedAt = Date.now()
+    if (!(name === 'settings' && LOCAL_ONLY_SETTINGS.has(obj.key))) queueMicrotask(syncState.onLocalChange)
+  })
+  t.hook('updating', (mods: any) => {
+    if (syncState.applyingRemote) return
+    queueMicrotask(syncState.onLocalChange)
+    if ('updatedAt' in mods) return
+    return { updatedAt: Date.now() }
+  })
+}
+
+/** Tombstone every synced record (used before wiping or replacing all data). */
+export async function tombstoneAll() {
+  const at = Date.now()
+  const stones: Tombstone[] = []
+  for (const w of await db.workouts.toArray()) if (w.uid) stones.push({ key: `workout:${w.uid}`, kind: 'workout', id: w.uid, at })
+  for (const m of await db.mat.toArray()) if (m.uid) stones.push({ key: `mat:${m.uid}`, kind: 'mat', id: m.uid, at })
+  for (const c of await db.checkins.toArray()) stones.push({ key: `checkin:${c.date}`, kind: 'checkin', id: c.date, at })
+  for (const c of await db.customExercises.toArray()) stones.push({ key: `custom:${c.id}`, kind: 'custom', id: c.id, at })
+  for (const st of await db.settings.toArray()) stones.push({ key: `setting:${st.key}`, kind: 'setting', id: st.key, at })
+  await db.tombstones.bulkPut(stones)
+}
+
+/** Delete from a synced table and leave a tombstone so other devices delete it too. */
+export async function deleteSynced(table: 'workouts' | 'mat', localId: number) {
+  const row = await db.table(table).get(localId)
+  await db.table(table).delete(localId)
+  if (row?.uid) {
+    const kind = table === 'workouts' ? 'workout' : 'mat'
+    await db.tombstones.put({ key: `${kind}:${row.uid}`, kind, id: row.uid, at: Date.now() })
+    syncState.onLocalChange()
+  }
+}
 
 export async function getSetting<T>(key: string, fallback: T): Promise<T> {
   const s = await db.settings.get(key)

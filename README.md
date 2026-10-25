@@ -8,7 +8,12 @@ Oggie's personal gym + mat + recovery log. A light web app you add to the iPhone
 - **Exercises**: picture demo, key cues, what it does on the mat, link to form videos.
 - **More**: Hevy CSV import, weekly summary to paste to Claude, backup/restore, programme start date (every 6th week = deload).
 
-Data is stored on the device (IndexedDB) so it works with no signal in the gym. Cloud sync and WHOOP come in Phase 2.
+Data is stored on the device (IndexedDB) so it works with no signal in the gym, and syncs to Supabase through passcode-protected Vercel functions (last write wins per record).
+
+WHOOP (official API v2): morning recovery, HRV, resting HR and sleep feed readiness; BJJ, judo, runs and padel become mat-log entries to rate. Tokens live server-side only.
+
+## Server settings (Vercel → Settings → Environment Variables)
+`WHOOP_CLIENT_ID`, `WHOOP_CLIENT_SECRET`, `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `APP_PASSCODE`. Check them at `/api/health`.
 
 ## Run locally
     npm install

@@ -1,10 +1,12 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db, getSetting, setSetting } from '../db'
+import { db, getSetting, setSetting, tombstoneAll } from '../db'
 import { hevyToWorkouts } from '../lib/hevy'
 import { DEFAULT_PROGRAM_START, exerciseOf, weekRange } from '../lib/session'
 import { describeLast } from '../engine/suggest'
 import { Btn, Card, Label } from '../ui'
+import { api, getPasscode, getSyncStatus, setPasscode, subscribeSync, syncNow } from '../lib/sync'
+import { connectWhoop, disconnectWhoop, lastWhoopFetch, refreshWhoop } from '../lib/whoop'
 
 export default function More() {
   const hevyRef = useRef<HTMLInputElement>(null)
@@ -41,11 +43,16 @@ export default function More() {
     try {
       const d = JSON.parse(await f.text())
       if (!confirm('Replace everything in the app with this backup?')) return
+      await tombstoneAll()
+      const noId = (r: { id?: number }) => {
+        const { id: _id, ...rest } = r
+        return rest
+      }
       await db.transaction('rw', [db.workouts, db.checkins, db.mat, db.customExercises, db.settings], async () => {
         await Promise.all([db.workouts.clear(), db.checkins.clear(), db.mat.clear(), db.customExercises.clear(), db.settings.clear()])
-        await db.workouts.bulkAdd(d.workouts ?? [])
+        await db.workouts.bulkAdd((d.workouts ?? []).map(noId))
         await db.checkins.bulkAdd(d.checkins ?? [])
-        await db.mat.bulkAdd(d.mat ?? [])
+        await db.mat.bulkAdd((d.mat ?? []).map(noId))
         await db.customExercises.bulkAdd(d.customExercises ?? [])
         await db.settings.bulkAdd(d.settings ?? [])
       })
@@ -87,6 +94,9 @@ export default function More() {
       <h1 className="num pt-1 text-[52px] uppercase">More</h1>
       {msg && <Card className="whitespace-pre-wrap border border-line text-[15px]" >{msg}</Card>}
 
+      <CloudCard />
+      <WhoopCard />
+
       <Card>
         <Label>Coach review</Label>
         <p className="mb-3 text-[14px] text-mute">Copies this week’s check-ins, sessions and feel ratings as text, ready to paste into your training chat.</p>
@@ -118,7 +128,7 @@ export default function More() {
       <Card>
         <Label>Backup</Label>
         <p className="mb-3 text-[14px] text-mute">
-          Everything lives on this phone{counts ? ` (${counts.w} workouts, ${counts.m} mat sessions)` : ''}. Cloud sync comes with the WHOOP link; until then, export a backup now and then.
+          {counts ? `${counts.w} workouts and ${counts.m} mat sessions on this phone. ` : ''}A file copy you keep yourself, on top of cloud sync.
         </p>
         <div className="flex gap-2">
           <Btn kind="soft" className="flex-1" onClick={exportBackup}>
@@ -131,21 +141,19 @@ export default function More() {
         </div>
       </Card>
 
-      <Card>
-        <Label>WHOOP</Label>
-        <p className="text-[13px] text-mute">Coming in Phase 2: recovery into your check-in, and BJJ / judo sessions logged automatically for you to rate.</p>
-      </Card>
 
       <Card>
         <Label>Delete data</Label>
-        <p className="mb-3 text-[14px] text-mute">Removes every workout, check-in and mat session from this phone. Export a backup first if you might want it back.</p>
+        <p className="mb-3 text-[14px] text-mute">Removes every workout, check-in and mat session from this phone and from cloud sync. Export a backup first if you might want it back.</p>
         <Btn
           kind="danger"
           className="w-full"
           onClick={async () => {
-            if (!confirm('Delete all training data on this phone? This cannot be undone.')) return
-            await Promise.all([db.workouts.clear(), db.checkins.clear(), db.mat.clear(), db.customExercises.clear(), db.settings.clear()])
-            setMsg('All data deleted from this phone.')
+            if (!confirm('Delete all training data here and in cloud sync? This cannot be undone.')) return
+            await tombstoneAll()
+            await Promise.all([db.workouts.clear(), db.checkins.clear(), db.mat.clear(), db.customExercises.clear(), db.settings.clear(), db.whoop.clear()])
+            await syncNow()
+            setMsg('All data deleted.')
           }}
         >
           Delete all data
@@ -159,5 +167,173 @@ export default function More() {
         </a>
       </p>
     </div>
+  )
+}
+
+const ago = (t: number | null) => {
+  if (!t) return 'never'
+  const m = Math.round((Date.now() - t) / 60000)
+  return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`
+}
+
+function CloudCard() {
+  const status = useSyncExternalStore(subscribeSync, getSyncStatus)
+  const [code, setCode] = useState('')
+  const [err, setErr] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  if (!status.enabled) {
+    return (
+      <Card>
+        <Label>Cloud sync</Label>
+        <p className="mb-3 text-[14px] text-mute">Enter the passcode you set in Vercel. Your log is then backed up and shared between your phone and computer.</p>
+        <form
+          className="flex gap-2"
+          onSubmit={async (e) => {
+            e.preventDefault()
+            setBusy(true)
+            setErr(null)
+            try {
+              await api('/api/sync', { method: 'POST', body: JSON.stringify({ cursor: new Date().toISOString(), changes: [] }) }, code)
+              setPasscode(code)
+              await syncNow()
+            } catch (x) {
+              setErr((x as Error).message)
+            } finally {
+              setBusy(false)
+            }
+          }}
+        >
+          <input aria-label="Passcode" type="password" autoComplete="current-password" value={code} onChange={(e) => setCode(e.target.value)} placeholder="Passcode" className="h-12 min-w-0 flex-1 rounded-2xl bg-card2 px-4" />
+          <Btn disabled={!code || busy}>{busy ? 'Checking…' : 'Turn on'}</Btn>
+        </form>
+        {err && (
+          <p role="alert" className="mt-2 text-[14px] text-stop">
+            {err}
+          </p>
+        )}
+      </Card>
+    )
+  }
+  return (
+    <Card>
+      <Label>Cloud sync</Label>
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-[15px]">
+          {status.running ? 'Syncing…' : status.lastError ? <span className="text-stop">Last sync failed: {status.lastError}</span> : <>Synced {ago(status.lastOk)}</>}
+          <div className="text-[13px] text-mute">Syncs on open, after each change, and every few minutes.</div>
+        </div>
+        <Btn kind="soft" className="shrink-0" disabled={status.running} onClick={() => syncNow()}>
+          Sync now
+        </Btn>
+      </div>
+      <button
+        className="mt-3 text-[13px] text-mute underline decoration-line underline-offset-4"
+        onClick={() => {
+          if (confirm('Turn off cloud sync on this device? Your data stays here and in the cloud.')) setPasscode(null)
+        }}
+      >
+        Turn off on this device
+      </button>
+    </Card>
+  )
+}
+
+function WhoopCard() {
+  const status = useSyncExternalStore(subscribeSync, getSyncStatus)
+  const [state, setState] = useState<'unknown' | 'connected' | 'off'>('unknown')
+  const [note, setNote] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [last, setLast] = useState(lastWhoopFetch())
+
+  useEffect(() => {
+    const h = location.hash
+    if (h.includes('whoop=connected')) setNote('WHOOP connected. Pulling your last 10 days…')
+    if (h.includes('whoop=error')) setNote('WHOOP: ' + decodeURIComponent(h.split('detail=')[1] ?? 'sign-in failed'))
+    if (h.includes('whoop=')) history.replaceState(null, '', '#more')
+    if (!getPasscode()) return
+    refreshWhoop()
+      .then((r) => {
+        setState(r.connected ? 'connected' : 'off')
+        setLast(lastWhoopFetch())
+        if (r.connected && h.includes('whoop=connected')) setNote(`WHOOP connected. ${r.added} sessions added to your mat log.`)
+      })
+      .catch((e) => {
+        setState('off')
+        setNote('WHOOP: ' + (e as Error).message)
+      })
+  }, [status.enabled])
+
+  return (
+    <Card>
+      <Label>WHOOP</Label>
+      {!status.enabled ? (
+        <p className="text-[14px] text-mute">Turn on cloud sync first — the WHOOP link uses the same passcode.</p>
+      ) : state === 'connected' ? (
+        <>
+          <p className="text-[15px]">
+            Connected · updated {ago(last)}
+            <span className="block text-[13px] text-mute">Recovery feeds your morning readiness. BJJ, judo, runs and padel land in your mat log to rate.</span>
+          </p>
+          <div className="mt-3 flex gap-2">
+            <Btn
+              kind="soft"
+              className="flex-1"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true)
+                try {
+                  const r = await refreshWhoop(14)
+                  setLast(lastWhoopFetch())
+                  setNote(r.added ? `${r.added} new sessions from WHOOP.` : 'Up to date.')
+                  syncNow()
+                } catch (e) {
+                  setNote('WHOOP: ' + (e as Error).message)
+                } finally {
+                  setBusy(false)
+                }
+              }}
+            >
+              {busy ? 'Updating…' : 'Update now'}
+            </Btn>
+            <Btn
+              kind="danger"
+              onClick={async () => {
+                if (!confirm('Disconnect WHOOP? Sessions already imported stay in your log.')) return
+                await disconnectWhoop()
+                setState('off')
+                setNote('WHOOP disconnected.')
+              }}
+            >
+              Disconnect
+            </Btn>
+          </div>
+        </>
+      ) : (
+        <>
+          <p className="mb-3 text-[14px] text-mute">Brings in recovery, HRV and resting heart rate each morning, and your BJJ and judo sessions for you to rate.</p>
+          <Btn
+            className="w-full"
+            disabled={busy || state === 'unknown'}
+            onClick={async () => {
+              setBusy(true)
+              try {
+                await connectWhoop()
+              } catch (e) {
+                setNote('WHOOP: ' + (e as Error).message)
+                setBusy(false)
+              }
+            }}
+          >
+            {state === 'unknown' ? 'Checking…' : 'Connect WHOOP'}
+          </Btn>
+        </>
+      )}
+      {note && (
+        <p role="status" className="mt-3 text-[14px] text-mute">
+          {note}
+        </p>
+      )}
+    </Card>
   )
 }

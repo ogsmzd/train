@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db, type Effort, type EntryLog, type Workout } from '../db'
+import { db, deleteSynced, type Effort, type EntryLog, type Workout } from '../db'
 import { exerciseOf } from '../lib/session'
 import { Btn, fmtKg, Icon, Label, LEVEL_WORD, Scale, Seg, Sheet, Stepper } from '../ui'
 import { ExerciseDetail } from './Exercises'
@@ -402,7 +402,7 @@ function FinishSheet({ w, onClose, onDone }: { w: Workout; onClose: () => void; 
             kind="danger"
             onClick={async () => {
               if (confirm('Discard this session? Nothing from it will be saved.')) {
-                await db.workouts.delete(w.id!)
+                await deleteSynced('workouts', w.id!)
                 onDone()
               }
             }}

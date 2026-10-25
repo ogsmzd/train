@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db, todayISO } from './db'
 import { readiness } from './engine/suggest'
+import { getPasscode, startAutoSync, syncNow } from './lib/sync'
+import { lastWhoopFetch, refreshWhoop } from './lib/whoop'
 import { Icon, type IconName } from './ui'
 import Today from './screens/Today'
 import WorkoutScreen from './screens/Workout'
@@ -20,22 +22,41 @@ const TABS: { id: Tab; label: string; icon: IconName }[] = [
 
 export default function App() {
   const [tab, setTab] = useState<Tab>(() => {
-    const h = location.hash.slice(1) as Tab
+    const h = location.hash.slice(1).split('?')[0] as Tab
     return TABS.some((t) => t.id === h) ? h : 'today'
   })
   const [inWorkout, setInWorkout] = useState(false)
   const active = useLiveQuery(() => db.workouts.filter((w) => w.source === 'app' && !w.endedAt).count())
   const checkin = useLiveQuery(() => db.checkins.get(todayISO()))
+  const whoopToday = useLiveQuery(() => db.whoop.get(todayISO()))
+
+  // cloud sync + WHOOP pull on open and whenever the app comes back to the foreground
+  useEffect(() => {
+    startAutoSync()
+    const pullWhoop = async (force = false) => {
+      if (!getPasscode() || !navigator.onLine) return
+      const last = lastWhoopFetch()
+      if (!force && last && Date.now() - last < 20 * 60 * 1000) return
+      try {
+        const r = await refreshWhoop()
+        if (r.connected) syncNow()
+      } catch {}
+    }
+    pullWhoop(location.hash.includes('whoop=connected'))
+    const onVis = () => document.visibilityState === 'visible' && pullWhoop()
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [])
 
   // the whole app takes on today's readiness colour
   useEffect(() => {
     const el = document.documentElement
-    if (checkin) el.dataset.ready = readiness(checkin).level
+    if (checkin) el.dataset.ready = readiness({ ...checkin, whoopRecovery: whoopToday?.recovery ?? checkin.whoopRecovery }).level
     else delete el.dataset.ready
-  }, [checkin])
+  }, [checkin, whoopToday])
 
   useEffect(() => {
-    history.replaceState(null, '', '#' + tab)
+    if (location.hash.slice(1).split('?')[0] !== tab) history.replaceState(null, '', '#' + tab)
     window.scrollTo(0, 0)
   }, [tab])
 
